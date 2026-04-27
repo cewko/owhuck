@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from apps.webhooks.models import WebhookEvent
 from .models import DeliveryAttempt
+from .retry import RetryPolicy
 
 
 MAX_RESPONSE_BODY_LENGTH = 10_000
@@ -71,15 +72,20 @@ class WebhookDeliveryClient:
 
 
 class DeliveryService:
-    def __init__(self, client: WebhookDeliveryClient | None = None):
+    def __init__(
+        self, 
+        client: WebhookDeliveryClient | None = None,
+        retry_policy: RetryPolicy | None = None
+    ):
         self.client = client or WebhookDeliveryClient()
+        self.retry_policy = retry_policy or RetryPolicy()
 
     def deliver(self, event_id: str) -> DeliveryAttempt:
         attempt = self._start_attempt(event_id)
         result = self.client.send(attempt)
 
         self._finish_attempt(attempt, result)
-        self._update_event_status(attempt.event, result)
+        self._update_event_status(attempt.event, result, attempt)
 
     @transaction.atomic
     def _start_attempt(self, event_id: str) -> DeliveryAttempt:
@@ -121,15 +127,51 @@ class DeliveryService:
         attempt.finished_at = timezone.now()
         attempt.save()
 
-    def _update_event_status(self, event: WebhookEvent, result: DeliveryResult) -> None:
+    def _update_event_status(
+        self, 
+        event: WebhookEvent, 
+        result: DeliveryResult,
+        attempt: DeliveryAttempt
+    ) -> None:
         if result.is_success:
             event.status = WebhookEvent.Status.SUCCESS
             event.delivered_at = timezone.now()
-            event.save(update_fields=["status", "delivered_at", "updated_at"])
-        else:
-            event.status = WebhookEvent.Status.FAILED
+            event.failed_at = None
+            event.next_retry_at = None
+            event.save(update_fields=[
+                "status", 
+                "delivered_at", 
+                "updated_at",
+                "next_retry_at",
+                "updated_at"
+            ])
+            return
+        if self.retry_policy.should_retry(
+            attempt_count=attempt.attempt_number,
+            max_retries=event.destination.max_retries
+        ):
+            event.status = WebhookEvent.Status.RETRYING
             event.failed_at = timezone.now()
-            event.save(update_fields=["status", "failed_at", "updated_at"])
+            event.next_retry_at = self.retry_policy.calculate_next_retry_at(
+                base_seconds=event.destination.retry_backoff_base_seconds,
+                attempt_number=attempt.attempt_number
+            )
+            event.save(update_fields=[
+                "status", 
+                "next_retry_at", 
+                "updated_at"
+            ])
+            return
+
+        event.status = WebhookEvent.Status.FAILED
+        event.failed_at = timezone.now()
+        event.next_retry_at = None
+        event.save(update_fields=[
+            "status",
+            "failed_at",
+            "next_retry_at",
+            "updated_at"
+        ])
 
     def _build_headers(self, event: WebhookEvent, attempt_number: int) -> dict:
         body = json.dumps(event.payload, separators=(",", ":"), ensure_ascii=False).encode()
