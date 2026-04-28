@@ -37,6 +37,7 @@ class DestinationCreateSerializer(serializers.ModelSerializer):
             "target_url",
             "status",
             "signing_key",
+            "signature_verification_mode",
             "incoming_signature_key",
             "max_retries",
             "timeout_seconds",
