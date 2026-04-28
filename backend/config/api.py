@@ -5,4 +5,5 @@ urlpatterns = [
     path('', include("apps.destinations.urls")),
     path("", include("apps.webhooks.urls")),
     path("", include("apps.deliveries.urls")),
+    path("", include("apps.audit.urls")),
 ]

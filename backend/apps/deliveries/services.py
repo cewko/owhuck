@@ -9,6 +9,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.webhooks.models import WebhookEvent
+from apps.audit.models import AuditLog
+from apps.audit.services import create_audit_log
 from .models import DeliveryAttempt
 from .retry import RetryPolicy
 
@@ -154,6 +156,19 @@ class DeliveryService:
                 "next_retry_at",
                 "updated_at"
             ])
+
+            create_audit_log(
+                action=AuditLog.Action.DELIVERY_SUCCEEDED,
+                entity=event,
+                metadata={
+                    "attempt_id": str(attempt.id),
+                    "attempt_number": attempt.attempt_number,
+                    "destination_id": str(event.destination.id),
+                    "status_code": result.status_code,
+                    "duration_ms": result.duration_ms
+                }
+            )
+
             return
 
         if self.retry_policy.should_retry(
@@ -187,6 +202,18 @@ class DeliveryService:
             "next_retry_at",
             "updated_at"
         ])
+
+        create_audit_log(
+            action=AuditLog.Action.DELIVERY_FAILED,
+            entity=event,
+            metadata={
+                "attempt_id": str(attempt.id),
+                "attempt_number": attempt.attempt_number,
+                "destination_id": str(event.destination.id),
+                "status_code": result.status_code,
+                "error_message": result.error_message
+            }
+        )
 
     def _build_headers(self, event: WebhookEvent, attempt_number: int) -> dict:
         body = json.dumps(event.payload, separators=(",", ":"), ensure_ascii=False).encode()

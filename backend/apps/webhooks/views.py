@@ -3,6 +3,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.viewsets import ReadOnlyModelViewSet
 
+from apps.audit.models import AuditLog
+from apps.audit.services import create_audit_log
+
 from apps.destinations.models import Destination
 from .serializers import (
     IngestWebhookResponseSerializer, 
@@ -36,6 +39,18 @@ class WebhookIngestView(APIView):
                     payload=payload,
                     raw_body=raw_body,
                 )
+            )
+
+            create_audit_log(
+                action=AuditLog.Action.WEBHOOK_RECEIVED,
+                entity=result.event,
+                request=request,
+                metadata={
+                    "destination_id": str(result.event.destination.id),
+                    "method": request.method,
+                    "idempotency_key": result.event.idempotency_key,
+                    "created": result.created
+                }
             )
         except Destination.DoesNotExist:
             return Response(
